@@ -220,6 +220,77 @@ func TestPublicSiteUsesAdminManagedGlobalAPIConfig(t *testing.T) {
 	}
 }
 
+func TestAdminConfigPersistsModelListsForUsers(t *testing.T) {
+	server := NewTestServer(t)
+
+	adminRegister := requestJSON(t, server.Handler, http.MethodPost, "/api/auth/register", "", map[string]any{
+		"username": "model-admin",
+		"password": "secret123",
+	})
+	adminSession := decodeEnvelope[AuthResponse](t, adminRegister.Body)
+	adminToken := adminSession.Data.Token
+
+	userRegister := requestJSON(t, server.Handler, http.MethodPost, "/api/auth/register", "", map[string]any{
+		"username": "model-user",
+		"password": "secret123",
+	})
+	userSession := decodeEnvelope[AuthResponse](t, userRegister.Body)
+	userToken := userSession.Data.Token
+
+	adminSave := requestJSON(t, server.Handler, http.MethodPut, "/api/admin/config", adminToken, map[string]any{
+		"baseUrl":     "https://public-gateway.example/v1/",
+		"apiKey":      "global-key",
+		"model":       "gpt-image-2",
+		"chatModel":   "gpt-5.5",
+		"imageModels": []string{"gpt-image-2", "gpt-image-1"},
+		"chatModels":  []string{"gpt-5.5", "gpt-5.4"},
+	})
+	if adminSave.Code != http.StatusOK {
+		t.Fatalf("admin config save status=%d body=%s", adminSave.Code, adminSave.Body.String())
+	}
+	adminConfig := decodeEnvelope[APIConfigResponse](t, adminSave.Body)
+	if strings.Join(adminConfig.Data.ImageModels, ",") != "gpt-image-2,gpt-image-1" || strings.Join(adminConfig.Data.ChatModels, ",") != "gpt-5.5,gpt-5.4" {
+		t.Fatalf("expected saved model lists, got %#v", adminConfig.Data)
+	}
+
+	userLoad := httptest.NewRecorder()
+	userLoadReq := httptest.NewRequest(http.MethodGet, "/api/user/config", nil)
+	userLoadReq.Header.Set("Authorization", "Bearer "+userToken)
+	server.Handler.ServeHTTP(userLoad, userLoadReq)
+	if userLoad.Code != http.StatusOK {
+		t.Fatalf("user config load status=%d body=%s", userLoad.Code, userLoad.Body.String())
+	}
+	publicConfig := decodeEnvelope[APIConfigResponse](t, userLoad.Body)
+	if publicConfig.Data.APIKey != "" {
+		t.Fatalf("expected user config to hide api key, got %#v", publicConfig.Data)
+	}
+	if strings.Join(publicConfig.Data.ImageModels, ",") != "gpt-image-2,gpt-image-1" || strings.Join(publicConfig.Data.ChatModels, ",") != "gpt-5.5,gpt-5.4" {
+		t.Fatalf("expected public model lists, got %#v", publicConfig.Data)
+	}
+}
+
+func TestAdminConfigRejectsDefaultModelOutsideModelLists(t *testing.T) {
+	server := NewTestServer(t)
+
+	adminRegister := requestJSON(t, server.Handler, http.MethodPost, "/api/auth/register", "", map[string]any{
+		"username": "invalid-model-admin",
+		"password": "secret123",
+	})
+	adminSession := decodeEnvelope[AuthResponse](t, adminRegister.Body)
+
+	adminSave := requestJSON(t, server.Handler, http.MethodPut, "/api/admin/config", adminSession.Data.Token, map[string]any{
+		"baseUrl":     "https://public-gateway.example/v1/",
+		"apiKey":      "global-key",
+		"model":       "gpt-image-2",
+		"chatModel":   "gpt-5.5",
+		"imageModels": []string{"gpt-image-1"},
+		"chatModels":  []string{"gpt-5.5"},
+	})
+	if adminSave.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid image model list rejected, status=%d body=%s", adminSave.Code, adminSave.Body.String())
+	}
+}
+
 func TestCanvasProjectFlowPersistsStateAndRevision(t *testing.T) {
 	server := NewTestServer(t)
 	token := authToken(t, server.Handler)
@@ -304,6 +375,8 @@ func TestAssetUploadAndExportZip(t *testing.T) {
 
 func TestImageReferenceAnalysisAndImageJobs(t *testing.T) {
 	server := NewTestServer(t)
+	server.Config.DefaultAPIBaseURL = "https://gateway.example/v1"
+	server.Config.DefaultAPIKey = "server-key"
 	token := authToken(t, server.Handler)
 
 	analysis := requestJSON(t, server.Handler, http.MethodPost, "/api/image-references/analyze", token, map[string]any{
@@ -326,15 +399,86 @@ func TestImageReferenceAnalysisAndImageJobs(t *testing.T) {
 		"model":  "gpt-image-2",
 		"prompt": "画一只猫",
 	})
-	if job.Code != http.StatusOK {
+	if job.Code != http.StatusAccepted {
 		t.Fatalf("job status = %d body=%s", job.Code, job.Body.String())
 	}
 	var submission ImageJob
 	if err := json.NewDecoder(job.Body).Decode(&submission); err != nil {
 		t.Fatalf("decode job: %v", err)
 	}
-	if submission.JobID == "" || submission.Status == "" || submission.OriginalPrompt != "画一只猫" {
+	if submission.JobID == "" || submission.Status != "pending" || submission.OriginalPrompt != "画一只猫" {
 		t.Fatalf("unexpected job submission: %#v", submission)
+	}
+}
+
+func TestImageGenerationJobCallsUpstreamAndStoresResponse(t *testing.T) {
+	var upstreamAuth string
+	var upstreamPrompt string
+	called := make(chan struct{}, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/images/generations" {
+			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+		}
+		upstreamAuth = r.Header.Get("Authorization")
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		upstreamPrompt, _ = payload["prompt"].(string)
+		called <- struct{}{}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"b64_json":"image-data"}]}`))
+	}))
+	defer upstream.Close()
+
+	server := NewTestServer(t)
+	server.Config.DefaultAPIBaseURL = upstream.URL
+	server.Config.DefaultAPIKey = "server-key"
+	token := authToken(t, server.Handler)
+
+	jobResponse := requestJSON(t, server.Handler, http.MethodPost, "/api/image-jobs/generations", token, map[string]any{
+		"model":  "gpt-image-2",
+		"prompt": "画一只猫",
+	})
+	if jobResponse.Code != http.StatusAccepted {
+		t.Fatalf("job submit status=%d body=%s", jobResponse.Code, jobResponse.Body.String())
+	}
+	var submitted ImageJob
+	if err := json.NewDecoder(jobResponse.Body).Decode(&submitted); err != nil {
+		t.Fatalf("decode submitted job: %v", err)
+	}
+	if submitted.JobID == "" || submitted.Status != "pending" {
+		t.Fatalf("expected pending job submission, got %#v", submitted)
+	}
+
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream was not called")
+	}
+	if upstreamAuth != "Bearer server-key" || upstreamPrompt != "画一只猫" {
+		t.Fatalf("unexpected upstream request auth=%q prompt=%q", upstreamAuth, upstreamPrompt)
+	}
+
+	var completed ImageJob
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		status := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/image-jobs/"+submitted.JobID, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		server.Handler.ServeHTTP(status, req)
+		if status.Code != http.StatusOK {
+			t.Fatalf("job status code=%d body=%s", status.Code, status.Body.String())
+		}
+		if err := json.NewDecoder(status.Body).Decode(&completed); err != nil {
+			t.Fatalf("decode completed job: %v", err)
+		}
+		if completed.Status == "completed" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if completed.Status != "completed" || !strings.Contains(string(completed.Response), "image-data") || completed.UpstreamStatus != http.StatusOK {
+		t.Fatalf("expected completed job with upstream response, got %#v response=%s", completed, string(completed.Response))
 	}
 }
 

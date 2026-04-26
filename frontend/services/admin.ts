@@ -70,7 +70,7 @@ export const loadAdminApiConfig = async () => {
   return getAdminResource<AdminApiConfig | null>('/api/admin/config');
 };
 
-export const saveAdminApiConfig = async (config: Pick<ApiConfig, 'baseUrl' | 'apiKey' | 'model' | 'chatModel'>) => {
+export const saveAdminApiConfig = async (config: Pick<ApiConfig, 'baseUrl' | 'apiKey' | 'model' | 'chatModel' | 'imageModels' | 'chatModels'>) => {
   const response = await fetch('/api/admin/config', {
     method: 'PUT',
     headers: {

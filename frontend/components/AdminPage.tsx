@@ -26,6 +26,24 @@ const formatBytes = (value: number) => {
   return `${size.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 };
 
+const formatModelList = (models: string[]) => models.join('\n');
+
+const parseModelList = (value: string) => {
+  const seen = new Set<string>();
+  return value
+    .split(/[\n,]/)
+    .map(model => model.trim())
+    .filter(model => {
+      if (!model || seen.has(model)) return false;
+      seen.add(model);
+      return true;
+    });
+};
+
+const nextSelectedModel = (current: string, models: string[], fallback: string) => (
+  models.includes(current) ? current : (models[0] || fallback)
+);
+
 const StatCard: React.FC<{ label: string; value: number; icon: React.ReactNode; tone: string }> = ({ label, value, icon, tone }) => (
   <div className="rounded-3xl border border-white/70 bg-white p-5 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.55)]">
     <div className="flex items-center justify-between">
@@ -52,6 +70,8 @@ const AdminPage: React.FC<AdminPageProps> = ({ session, onLogout }) => {
     apiKey: '',
     model: 'gpt-image-2',
     chatModel: 'gpt-5.5',
+    imageModels: AVAILABLE_MODELS,
+    chatModels: AVAILABLE_CHAT_MODELS,
     serverDefault: true
   });
   const [showApiKey, setShowApiKey] = useState(false);
@@ -104,7 +124,9 @@ const AdminPage: React.FC<AdminPageProps> = ({ session, onLogout }) => {
         baseUrl: normalizedConfig.baseUrl,
         apiKey: normalizedConfig.apiKey,
         model: normalizedConfig.model,
-        chatModel: normalizedConfig.chatModel
+        chatModel: normalizedConfig.chatModel,
+        imageModels: normalizedConfig.imageModels,
+        chatModels: normalizedConfig.chatModels
       });
       setApiConfig(normalizeApiConfig(saved));
       setConfigMessage('全站中转站配置已保存，普通用户会自动使用该配置。');
@@ -229,7 +251,7 @@ const AdminPage: React.FC<AdminPageProps> = ({ session, onLogout }) => {
                     onChange={(event) => setApiConfig(prev => ({ ...prev, model: event.target.value }))}
                     className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm font-bold outline-none transition-all focus:border-gray-300 focus:ring-4 focus:ring-black/5"
                   >
-                    {AVAILABLE_MODELS.map(model => <option key={model} value={model}>{model}</option>)}
+                    {apiConfig.imageModels.map(model => <option key={model} value={model}>{model}</option>)}
                   </select>
                 </div>
                 <div>
@@ -239,8 +261,42 @@ const AdminPage: React.FC<AdminPageProps> = ({ session, onLogout }) => {
                     onChange={(event) => setApiConfig(prev => ({ ...prev, chatModel: event.target.value }))}
                     className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm font-bold outline-none transition-all focus:border-gray-300 focus:ring-4 focus:ring-black/5"
                   >
-                    {AVAILABLE_CHAT_MODELS.map(model => <option key={model} value={model}>{model}</option>)}
+                    {apiConfig.chatModels.map(model => <option key={model} value={model}>{model}</option>)}
                   </select>
+                </div>
+                <div>
+                  <label className="mb-2 block text-sm font-black text-gray-700">生图模型列表</label>
+                  <textarea
+                    value={formatModelList(apiConfig.imageModels)}
+                    onChange={(event) => {
+                      const imageModels = parseModelList(event.target.value);
+                      setApiConfig(prev => ({
+                        ...prev,
+                        imageModels,
+                        model: nextSelectedModel(prev.model, imageModels, AVAILABLE_MODELS[0])
+                      }));
+                    }}
+                    rows={4}
+                    placeholder="每行一个模型，例如：gpt-image-2"
+                    className="w-full rounded-2xl border border-gray-200 px-4 py-3 text-sm font-bold outline-none transition-all focus:border-gray-300 focus:ring-4 focus:ring-black/5"
+                  />
+                </div>
+                <div>
+                  <label className="mb-2 block text-sm font-black text-gray-700">对话模型列表</label>
+                  <textarea
+                    value={formatModelList(apiConfig.chatModels)}
+                    onChange={(event) => {
+                      const chatModels = parseModelList(event.target.value);
+                      setApiConfig(prev => ({
+                        ...prev,
+                        chatModels,
+                        chatModel: nextSelectedModel(prev.chatModel, chatModels, AVAILABLE_CHAT_MODELS[0])
+                      }));
+                    }}
+                    rows={4}
+                    placeholder="每行一个模型，例如：gpt-5.5"
+                    className="w-full rounded-2xl border border-gray-200 px-4 py-3 text-sm font-bold outline-none transition-all focus:border-gray-300 focus:ring-4 focus:ring-black/5"
+                  />
                 </div>
               </div>
 

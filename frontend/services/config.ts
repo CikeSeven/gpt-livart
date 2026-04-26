@@ -26,6 +26,8 @@ export interface ApiConfig {
   apiKey: string;
   model: string;
   chatModel: string;
+  imageModels: string[];
+  chatModels: string[];
   serverDefault?: boolean;
 }
 
@@ -47,13 +49,29 @@ export const buildImageApiUrls = (baseUrl: string) => {
 };
 
 const defaultBaseUrl = normalizeBaseUrl(process.env.IMAGE_API_BASE_URL || '');
+const defaultImageModel = process.env.IMAGE_API_MODEL || 'gpt-image-2';
+const defaultChatModel = process.env.PROMPT_OPTIMIZER_MODEL || process.env.CHAT_API_MODEL || 'gpt-5.5';
+
+const normalizeModelList = (models: string[] | undefined, fallbackModels: string[]) => {
+  const seen = new Set<string>();
+  const normalized = (models || [])
+    .map(model => model.trim())
+    .filter(model => {
+      if (!model || seen.has(model)) return false;
+      seen.add(model);
+      return true;
+    });
+  return normalized.length > 0 ? normalized : fallbackModels;
+};
 
 export const DEFAULT_API_CONFIG: ApiConfig = {
   baseUrl: defaultBaseUrl,
   ...buildImageApiUrls(defaultBaseUrl),
   apiKey: '',
-  model: process.env.IMAGE_API_MODEL || 'gpt-image-2',
-  chatModel: process.env.PROMPT_OPTIMIZER_MODEL || process.env.CHAT_API_MODEL || 'gpt-5.5',
+  model: defaultImageModel,
+  chatModel: defaultChatModel,
+  imageModels: normalizeModelList([defaultImageModel, ...AVAILABLE_MODELS], AVAILABLE_MODELS),
+  chatModels: normalizeModelList([defaultChatModel, ...AVAILABLE_CHAT_MODELS], AVAILABLE_CHAT_MODELS),
   serverDefault: false
 };
 
@@ -63,12 +81,12 @@ let hasLoadedUserApiConfig = false;
 export const normalizeApiConfig = (config: Partial<ApiConfig>): ApiConfig => {
   const baseUrl = normalizeBaseUrl(config.baseUrl || DEFAULT_API_CONFIG.baseUrl);
   const imageApiUrls = buildImageApiUrls(baseUrl);
-  const imageModel = AVAILABLE_MODELS.includes(config.model || '')
-    ? config.model || DEFAULT_API_CONFIG.model
-    : DEFAULT_API_CONFIG.model;
-  const chatModel = AVAILABLE_CHAT_MODELS.includes(config.chatModel || '')
-    ? config.chatModel || DEFAULT_API_CONFIG.chatModel
-    : DEFAULT_API_CONFIG.chatModel;
+  const imageModels = normalizeModelList(config.imageModels, AVAILABLE_MODELS);
+  const chatModels = normalizeModelList(config.chatModels, AVAILABLE_CHAT_MODELS);
+  const requestedImageModel = (config.model || DEFAULT_API_CONFIG.model).trim();
+  const requestedChatModel = (config.chatModel || DEFAULT_API_CONFIG.chatModel).trim();
+  const imageModel = imageModels.includes(requestedImageModel) ? requestedImageModel : imageModels[0];
+  const chatModel = chatModels.includes(requestedChatModel) ? requestedChatModel : chatModels[0];
 
   return {
     baseUrl,
@@ -76,6 +94,8 @@ export const normalizeApiConfig = (config: Partial<ApiConfig>): ApiConfig => {
     apiKey: (config.apiKey || '').trim(),
     model: imageModel,
     chatModel,
+    imageModels,
+    chatModels,
     serverDefault: !!config.serverDefault
   };
 };
@@ -121,7 +141,9 @@ export const saveApiConfig = async (config: ApiConfig): Promise<ApiConfig> => {
       baseUrl: normalizedConfig.baseUrl,
       apiKey: normalizedConfig.apiKey,
       model: normalizedConfig.model,
-      chatModel: normalizedConfig.chatModel
+      chatModel: normalizedConfig.chatModel,
+      imageModels: normalizedConfig.imageModels,
+      chatModels: normalizedConfig.chatModels
     })
   });
   const savedConfig = await unwrapApiResponse<ApiConfig>(response);

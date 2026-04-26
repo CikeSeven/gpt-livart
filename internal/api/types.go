@@ -90,10 +90,12 @@ type UserRecord struct {
 }
 
 type APIConfigRequest struct {
-	BaseURL   string `json:"baseUrl"`
-	APIKey    string `json:"apiKey"`
-	Model     string `json:"model"`
-	ChatModel string `json:"chatModel"`
+	BaseURL     string   `json:"baseUrl"`
+	APIKey      string   `json:"apiKey"`
+	Model       string   `json:"model"`
+	ChatModel   string   `json:"chatModel"`
+	ImageModels []string `json:"imageModels"`
+	ChatModels  []string `json:"chatModels"`
 }
 
 type APIConfigResponse struct {
@@ -101,6 +103,8 @@ type APIConfigResponse struct {
 	APIKey          string    `json:"apiKey"`
 	Model           string    `json:"model"`
 	ChatModel       string    `json:"chatModel"`
+	ImageModels     []string  `json:"imageModels"`
+	ChatModels      []string  `json:"chatModels"`
 	TextToImageURL  string    `json:"textToImageUrl"`
 	ImageToImageURL string    `json:"imageToImageUrl"`
 	UpdatedAt       time.Time `json:"updatedAt,omitempty"`

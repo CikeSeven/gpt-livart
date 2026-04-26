@@ -347,7 +347,7 @@ func (s *Server) saveAPIConfig(w http.ResponseWriter, r *http.Request) {
 	writeFail(w, http.StatusForbidden, "公益站点由管理员统一配置中转站", "USER_CONFIG_DISABLED")
 }
 
-func (s *Server) buildAPIConfig(baseURL, apiKey, model, chatModel string, serverDefault bool) APIConfigResponse {
+func (s *Server) buildAPIConfig(baseURL, apiKey, model, chatModel string, imageModels, chatModels []string, serverDefault bool) APIConfigResponse {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if model == "" {
 		model = s.Config.DefaultImageModel
@@ -355,7 +355,35 @@ func (s *Server) buildAPIConfig(baseURL, apiKey, model, chatModel string, server
 	if chatModel == "" {
 		chatModel = s.Config.DefaultChatModel
 	}
-	return APIConfigResponse{BaseURL: baseURL, APIKey: strings.TrimSpace(apiKey), Model: model, ChatModel: chatModel, TextToImageURL: joinURL(baseURL, "images/generations"), ImageToImageURL: joinURL(baseURL, "images/edits"), UpdatedAt: time.Now().UTC(), ServerDefault: serverDefault}
+	return APIConfigResponse{BaseURL: baseURL, APIKey: strings.TrimSpace(apiKey), Model: model, ChatModel: chatModel, ImageModels: normalizeModelList(imageModels, model), ChatModels: normalizeModelList(chatModels, chatModel), TextToImageURL: joinURL(baseURL, "images/generations"), ImageToImageURL: joinURL(baseURL, "images/edits"), UpdatedAt: time.Now().UTC(), ServerDefault: serverDefault}
+}
+
+func normalizeModelList(models []string, selected string) []string {
+	seen := map[string]bool{}
+	normalized := make([]string, 0, len(models)+1)
+	for _, model := range models {
+		model = strings.TrimSpace(model)
+		if model == "" || seen[model] {
+			continue
+		}
+		seen[model] = true
+		normalized = append(normalized, model)
+	}
+	selected = strings.TrimSpace(selected)
+	if len(normalized) == 0 && selected != "" {
+		normalized = append(normalized, selected)
+	}
+	return normalized
+}
+
+func modelInList(model string, models []string) bool {
+	model = strings.TrimSpace(model)
+	for _, candidate := range models {
+		if strings.TrimSpace(candidate) == model {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) publicSiteAPIConfig(ctx context.Context) (APIConfigResponse, bool, error) {
@@ -370,7 +398,7 @@ func (s *Server) publicSiteAPIConfig(ctx context.Context) (APIConfigResponse, bo
 	if s.Config.DefaultAPIBaseURL == "" || s.Config.DefaultAPIKey == "" {
 		return APIConfigResponse{}, false, nil
 	}
-	return s.buildAPIConfig(s.Config.DefaultAPIBaseURL, s.Config.DefaultAPIKey, s.Config.DefaultImageModel, s.Config.DefaultChatModel, true), true, nil
+	return s.buildAPIConfig(s.Config.DefaultAPIBaseURL, s.Config.DefaultAPIKey, s.Config.DefaultImageModel, s.Config.DefaultChatModel, nil, nil, true), true, nil
 }
 
 func (s *Server) upstreamAPIConfig(ctx context.Context) (APIConfigResponse, bool) {
@@ -647,21 +675,93 @@ func (s *Server) rewriteMultipartImageRequest(r *http.Request) ([]byte, string, 
 }
 
 func (s *Server) createImageGenerationJob(w http.ResponseWriter, r *http.Request) {
-	s.createImageJob(w, r, false)
+	s.createImageJob(w, r, "images/generations")
 }
 
 func (s *Server) createImageEditJob(w http.ResponseWriter, r *http.Request) {
-	s.createImageJob(w, r, true)
+	s.createImageJob(w, r, "images/edits")
 }
 
-func (s *Server) createImageJob(w http.ResponseWriter, r *http.Request, multipartRequest bool) {
-	_, _, prompt, _ := s.readImageRequestBody(r)
-	job := ImageJob{JobID: uuid.NewString(), Status: "completed", OriginalPrompt: prompt, OptimizedPrompt: prompt, Response: json.RawMessage(`{"data":[{"b64_json":""}]}`), Attempts: 1, UserID: currentUser(r).ID}
+func (s *Server) createImageJob(w http.ResponseWriter, r *http.Request, fallbackPath string) {
+	body, contentType, prompt, err := s.readImageRequestBody(r)
+	if err != nil {
+		writeFail(w, http.StatusBadRequest, err.Error(), "IMAGE_REQUEST_INVALID")
+		return
+	}
+	config, ok := s.upstreamAPIConfig(r.Context())
+	if !ok {
+		writeFail(w, http.StatusBadRequest, "请先配置 API 地址和密钥", "API_CONFIG_REQUIRED")
+		return
+	}
+	upstreamURL := config.ImageToImageURL
+	if fallbackPath == "images/generations" {
+		upstreamURL = config.TextToImageURL
+	}
+	if upstreamURL == "" || config.APIKey == "" {
+		writeFail(w, http.StatusBadRequest, "请先配置 API 地址和密钥", "API_CONFIG_REQUIRED")
+		return
+	}
+
+	job := ImageJob{JobID: uuid.NewString(), Status: "pending", OriginalPrompt: prompt, OptimizedPrompt: prompt, Attempts: 1, UserID: currentUser(r).ID}
 	s.jobsMu.Lock()
 	s.jobs[job.JobID] = job
 	s.jobsMu.Unlock()
 	s.publishJob(job)
-	writeRawJSON(w, http.StatusOK, job)
+	go s.runImageJob(job.JobID, upstreamURL, config.APIKey, contentType, body)
+	writeRawJSON(w, http.StatusAccepted, job)
+}
+
+func (s *Server) runImageJob(jobID, upstreamURL, apiKey, contentType string, body []byte) {
+	ctx, cancel := context.WithTimeout(context.Background(), s.Config.RequestTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(body))
+	if err != nil {
+		s.completeImageJob(jobID, ImageJob{Status: "error", Error: map[string]any{"message": "上游地址无效", "code": "UPSTREAM_URL_INVALID"}})
+		return
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", contentType)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		s.completeImageJob(jobID, ImageJob{Status: "error", Error: map[string]any{"message": "上游 AI 接口请求失败：" + err.Error(), "code": "UPSTREAM_REQUEST_FAILED"}})
+		return
+	}
+	defer resp.Body.Close()
+
+	respBody, readErr := io.ReadAll(resp.Body)
+	requestID := firstNonEmpty(resp.Header.Get("X-Request-Id"), resp.Header.Get("Openai-Request-Id"), resp.Header.Get("Request-Id"))
+	if readErr != nil {
+		s.completeImageJob(jobID, ImageJob{Status: "error", Error: map[string]any{"message": "读取上游响应失败：" + readErr.Error(), "code": "UPSTREAM_RESPONSE_READ_FAILED"}, UpstreamStatus: resp.StatusCode, RequestID: requestID})
+		return
+	}
+
+	status := "completed"
+	var jobError any
+	if resp.StatusCode >= 400 {
+		status = "error"
+		jobError = json.RawMessage(respBody)
+	}
+	s.completeImageJob(jobID, ImageJob{Status: status, Response: json.RawMessage(respBody), Error: jobError, UpstreamStatus: resp.StatusCode, RequestID: requestID})
+}
+
+func (s *Server) completeImageJob(jobID string, patch ImageJob) {
+	s.jobsMu.Lock()
+	job, ok := s.jobs[jobID]
+	if !ok {
+		s.jobsMu.Unlock()
+		return
+	}
+	job.Status = patch.Status
+	job.Response = patch.Response
+	job.Error = patch.Error
+	job.UpstreamStatus = patch.UpstreamStatus
+	job.RequestID = patch.RequestID
+	s.jobs[jobID] = job
+	s.jobsMu.Unlock()
+	s.publishJob(job)
 }
 
 func (s *Server) getImageJob(w http.ResponseWriter, r *http.Request) {
@@ -877,7 +977,15 @@ func (s *Server) adminSaveConfig(w http.ResponseWriter, r *http.Request) {
 		writeFail(w, http.StatusBadRequest, "Base URL 和 API Key 不能为空", "VALIDATION_ERROR")
 		return
 	}
-	config := s.buildAPIConfig(request.BaseURL, request.APIKey, request.Model, request.ChatModel, true)
+	config := s.buildAPIConfig(request.BaseURL, request.APIKey, request.Model, request.ChatModel, request.ImageModels, request.ChatModels, true)
+	if !modelInList(config.Model, config.ImageModels) {
+		writeFail(w, http.StatusBadRequest, "默认生图模型必须包含在生图模型列表中", "VALIDATION_ERROR")
+		return
+	}
+	if !modelInList(config.ChatModel, config.ChatModels) {
+		writeFail(w, http.StatusBadRequest, "默认对话模型必须包含在对话模型列表中", "VALIDATION_ERROR")
+		return
+	}
 	saved, err := s.store.SaveSystemAPIConfig(r.Context(), config)
 	if err != nil {
 		writeFail(w, http.StatusInternalServerError, "保存全站配置失败", "ADMIN_CONFIG_SAVE_FAILED")

@@ -96,19 +96,27 @@ CREATE TABLE IF NOT EXISTS artisan_user_api_configs (
     api_key TEXT NOT NULL,
     image_model VARCHAR(120) NOT NULL,
     chat_model VARCHAR(120) NOT NULL,
+    image_models JSONB NOT NULL DEFAULT '[]'::jsonb,
+    chat_models JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE artisan_user_api_configs ADD COLUMN IF NOT EXISTS image_models JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE artisan_user_api_configs ADD COLUMN IF NOT EXISTS chat_models JSONB NOT NULL DEFAULT '[]'::jsonb;
 CREATE TABLE IF NOT EXISTS artisan_system_api_config (
     id SMALLINT PRIMARY KEY DEFAULT 1,
     base_url VARCHAR(500) NOT NULL,
     api_key TEXT NOT NULL,
     image_model VARCHAR(120) NOT NULL,
     chat_model VARCHAR(120) NOT NULL,
+    image_models JSONB NOT NULL DEFAULT '[]'::jsonb,
+    chat_models JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT artisan_system_api_config_singleton CHECK (id = 1)
-);`)
+);
+ALTER TABLE artisan_system_api_config ADD COLUMN IF NOT EXISTS image_models JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE artisan_system_api_config ADD COLUMN IF NOT EXISTS chat_models JSONB NOT NULL DEFAULT '[]'::jsonb;`)
 	return err
 }
 
@@ -139,13 +147,16 @@ func (s *PostgresStore) readUser(ctx context.Context, sql string, args ...any) (
 
 func (s *PostgresStore) GetAPIConfig(ctx context.Context, userID string) (api.APIConfigResponse, bool, error) {
 	var config api.APIConfigResponse
-	err := s.pool.QueryRow(ctx, `SELECT base_url, api_key, image_model, chat_model, updated_at FROM artisan_user_api_configs WHERE user_id=$1`, userID).Scan(&config.BaseURL, &config.APIKey, &config.Model, &config.ChatModel, &config.UpdatedAt)
+	var imageModelsJSON, chatModelsJSON string
+	err := s.pool.QueryRow(ctx, `SELECT base_url, api_key, image_model, chat_model, COALESCE(image_models, '[]'::jsonb)::text, COALESCE(chat_models, '[]'::jsonb)::text, updated_at FROM artisan_user_api_configs WHERE user_id=$1`, userID).Scan(&config.BaseURL, &config.APIKey, &config.Model, &config.ChatModel, &imageModelsJSON, &chatModelsJSON, &config.UpdatedAt)
 	if err == pgx.ErrNoRows {
 		return config, false, nil
 	}
 	if err != nil {
 		return config, false, err
 	}
+	config.ImageModels = decodeModelList(imageModelsJSON, config.Model)
+	config.ChatModels = decodeModelList(chatModelsJSON, config.ChatModel)
 	config.TextToImageURL = joinURL(config.BaseURL, "images/generations")
 	config.ImageToImageURL = joinURL(config.BaseURL, "images/edits")
 	return config, true, nil
@@ -153,19 +164,22 @@ func (s *PostgresStore) GetAPIConfig(ctx context.Context, userID string) (api.AP
 
 func (s *PostgresStore) SaveAPIConfig(ctx context.Context, userID string, config api.APIConfigResponse) (api.APIConfigResponse, error) {
 	config.UpdatedAt = time.Now().UTC()
-	err := s.pool.QueryRow(ctx, `INSERT INTO artisan_user_api_configs (user_id, base_url, api_key, image_model, chat_model, updated_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (user_id) DO UPDATE SET base_url=EXCLUDED.base_url, api_key=EXCLUDED.api_key, image_model=EXCLUDED.image_model, chat_model=EXCLUDED.chat_model, updated_at=EXCLUDED.updated_at RETURNING updated_at`, userID, config.BaseURL, config.APIKey, config.Model, config.ChatModel, config.UpdatedAt).Scan(&config.UpdatedAt)
+	err := s.pool.QueryRow(ctx, `INSERT INTO artisan_user_api_configs (user_id, base_url, api_key, image_model, chat_model, image_models, chat_models, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (user_id) DO UPDATE SET base_url=EXCLUDED.base_url, api_key=EXCLUDED.api_key, image_model=EXCLUDED.image_model, chat_model=EXCLUDED.chat_model, image_models=EXCLUDED.image_models, chat_models=EXCLUDED.chat_models, updated_at=EXCLUDED.updated_at RETURNING updated_at`, userID, config.BaseURL, config.APIKey, config.Model, config.ChatModel, encodeModelList(config.ImageModels), encodeModelList(config.ChatModels), config.UpdatedAt).Scan(&config.UpdatedAt)
 	return config, err
 }
 
 func (s *PostgresStore) GetSystemAPIConfig(ctx context.Context) (api.APIConfigResponse, bool, error) {
 	var config api.APIConfigResponse
-	err := s.pool.QueryRow(ctx, `SELECT base_url, api_key, image_model, chat_model, updated_at FROM artisan_system_api_config WHERE id=1`).Scan(&config.BaseURL, &config.APIKey, &config.Model, &config.ChatModel, &config.UpdatedAt)
+	var imageModelsJSON, chatModelsJSON string
+	err := s.pool.QueryRow(ctx, `SELECT base_url, api_key, image_model, chat_model, COALESCE(image_models, '[]'::jsonb)::text, COALESCE(chat_models, '[]'::jsonb)::text, updated_at FROM artisan_system_api_config WHERE id=1`).Scan(&config.BaseURL, &config.APIKey, &config.Model, &config.ChatModel, &imageModelsJSON, &chatModelsJSON, &config.UpdatedAt)
 	if err == pgx.ErrNoRows {
 		return config, false, nil
 	}
 	if err != nil {
 		return config, false, err
 	}
+	config.ImageModels = decodeModelList(imageModelsJSON, config.Model)
+	config.ChatModels = decodeModelList(chatModelsJSON, config.ChatModel)
 	config.TextToImageURL = joinURL(config.BaseURL, "images/generations")
 	config.ImageToImageURL = joinURL(config.BaseURL, "images/edits")
 	config.ServerDefault = true
@@ -175,8 +189,27 @@ func (s *PostgresStore) GetSystemAPIConfig(ctx context.Context) (api.APIConfigRe
 func (s *PostgresStore) SaveSystemAPIConfig(ctx context.Context, config api.APIConfigResponse) (api.APIConfigResponse, error) {
 	config.UpdatedAt = time.Now().UTC()
 	config.ServerDefault = true
-	err := s.pool.QueryRow(ctx, `INSERT INTO artisan_system_api_config (id, base_url, api_key, image_model, chat_model, updated_at) VALUES (1, $1, $2, $3, $4, $5) ON CONFLICT (id) DO UPDATE SET base_url=EXCLUDED.base_url, api_key=EXCLUDED.api_key, image_model=EXCLUDED.image_model, chat_model=EXCLUDED.chat_model, updated_at=EXCLUDED.updated_at RETURNING updated_at`, config.BaseURL, config.APIKey, config.Model, config.ChatModel, config.UpdatedAt).Scan(&config.UpdatedAt)
+	err := s.pool.QueryRow(ctx, `INSERT INTO artisan_system_api_config (id, base_url, api_key, image_model, chat_model, image_models, chat_models, updated_at) VALUES (1, $1, $2, $3, $4, $5, $6, $7) ON CONFLICT (id) DO UPDATE SET base_url=EXCLUDED.base_url, api_key=EXCLUDED.api_key, image_model=EXCLUDED.image_model, chat_model=EXCLUDED.chat_model, image_models=EXCLUDED.image_models, chat_models=EXCLUDED.chat_models, updated_at=EXCLUDED.updated_at RETURNING updated_at`, config.BaseURL, config.APIKey, config.Model, config.ChatModel, encodeModelList(config.ImageModels), encodeModelList(config.ChatModels), config.UpdatedAt).Scan(&config.UpdatedAt)
 	return config, err
+}
+
+func encodeModelList(models []string) []byte {
+	if models == nil {
+		models = []string{}
+	}
+	data, _ := json.Marshal(models)
+	return data
+}
+
+func decodeModelList(raw, fallback string) []string {
+	var models []string
+	if err := json.Unmarshal([]byte(raw), &models); err != nil {
+		models = nil
+	}
+	if len(models) == 0 && fallback != "" {
+		return []string{fallback}
+	}
+	return models
 }
 
 func (s *PostgresStore) ListCanvases(ctx context.Context, userID string) ([]api.CanvasSummary, error) {

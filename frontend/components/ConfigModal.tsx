@@ -4,8 +4,6 @@ import {
   getApiConfig,
   saveApiConfig,
   ApiConfig,
-  AVAILABLE_CHAT_MODELS,
-  AVAILABLE_MODELS,
   DEFAULT_API_CONFIG,
   buildImageApiUrls,
   joinUrl,
@@ -122,7 +120,7 @@ const ConfigModal: React.FC<ConfigModalProps> = ({ isOpen, onClose, onSaved, req
               onChange={(event) => setConfig({ ...config, model: event.target.value })}
               className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-black/10 focus:border-gray-300 transition-all bg-white"
             >
-              {AVAILABLE_MODELS.map((model) => (
+              {config.imageModels.map((model) => (
                 <option key={model} value={model}>{model}</option>
               ))}
             </select>
@@ -135,7 +133,7 @@ const ConfigModal: React.FC<ConfigModalProps> = ({ isOpen, onClose, onSaved, req
               onChange={(event) => setConfig({ ...config, chatModel: event.target.value })}
               className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-black/10 focus:border-gray-300 transition-all bg-white"
             >
-              {AVAILABLE_CHAT_MODELS.map((model) => (
+              {config.chatModels.map((model) => (
                 <option key={model} value={model}>{model}</option>
               ))}
             </select>
