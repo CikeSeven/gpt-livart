@@ -59,6 +59,7 @@ services:
       LIVART_DEFAULT_IMAGE_MODEL: ${LIVART_DEFAULT_IMAGE_MODEL:-gpt-image-2}
       LIVART_DEFAULT_CHAT_MODEL: ${LIVART_DEFAULT_CHAT_MODEL:-gpt-5.5}
       WAIT_TIMEOUT_SECONDS: ${WAIT_TIMEOUT_SECONDS:-120}
+      STATIC_DIR: /app/frontend/dist
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
       interval: 30s

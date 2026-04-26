@@ -13,6 +13,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -32,11 +33,14 @@ type contextKey string
 const userContextKey contextKey = "livart-user"
 
 type Store interface {
+	CountUsers(ctx context.Context) (int, error)
 	CreateUser(ctx context.Context, user UserRecord) error
 	FindUserByUsername(ctx context.Context, username string) (UserRecord, error)
 	FindUserByID(ctx context.Context, id string) (UserRecord, error)
 	GetAPIConfig(ctx context.Context, userID string) (APIConfigResponse, bool, error)
 	SaveAPIConfig(ctx context.Context, userID string, config APIConfigResponse) (APIConfigResponse, error)
+	GetSystemAPIConfig(ctx context.Context) (APIConfigResponse, bool, error)
+	SaveSystemAPIConfig(ctx context.Context, config APIConfigResponse) (APIConfigResponse, error)
 	ListCanvases(ctx context.Context, userID string) ([]CanvasSummary, error)
 	CreateCanvas(ctx context.Context, userID string, title string, state json.RawMessage) (CanvasResponse, error)
 	GetCanvas(ctx context.Context, userID string, canvasID string) (CanvasResponse, error)
@@ -46,6 +50,10 @@ type Store interface {
 	GetAsset(ctx context.Context, assetID string) (AssetResponse, error)
 	SaveExport(ctx context.Context, export ExportFile) error
 	GetExport(ctx context.Context, userID string, exportID string) (ExportFile, error)
+	AdminSummary(ctx context.Context) (AdminSummary, error)
+	AdminListUsers(ctx context.Context) ([]AuthUser, error)
+	AdminListCanvases(ctx context.Context) ([]AdminCanvas, error)
+	AdminListAssets(ctx context.Context) ([]AssetResponse, error)
 }
 
 type ObjectStore interface {
@@ -119,8 +127,44 @@ func (s *Server) routes() http.Handler {
 		r.Post("/api/exports/images", s.createImageExport)
 		r.Get("/api/exports/{exportId}/download", s.downloadExport)
 	})
+	r.Group(func(r chi.Router) {
+		r.Use(s.auth)
+		r.Use(s.adminOnly)
+		r.Get("/api/admin/config", s.adminGetConfig)
+		r.Put("/api/admin/config", s.adminSaveConfig)
+		r.Get("/api/admin/summary", s.adminSummary)
+		r.Get("/api/admin/users", s.adminUsers)
+		r.Get("/api/admin/canvases", s.adminCanvases)
+		r.Get("/api/admin/assets", s.adminAssets)
+	})
+	r.Get("/*", s.staticFrontend)
 
 	return r
+}
+
+func (s *Server) staticFrontend(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/ws/") {
+		writeFail(w, http.StatusNotFound, "接口不存在", "NOT_FOUND")
+		return
+	}
+	if s.Config.StaticDir == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	requestedPath := filepath.Clean("/" + r.URL.Path)
+	filePath := filepath.Join(s.Config.StaticDir, strings.TrimPrefix(requestedPath, "/"))
+	if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
+		http.ServeFile(w, r, filePath)
+		return
+	}
+
+	indexPath := filepath.Join(s.Config.StaticDir, "index.html")
+	if info, err := os.Stat(indexPath); err == nil && !info.IsDir() {
+		http.ServeFile(w, r, indexPath)
+		return
+	}
+	http.NotFound(w, r)
 }
 
 func (s *Server) cors(next http.Handler) http.Handler {
@@ -184,6 +228,16 @@ func (s *Server) auth(next http.Handler) http.Handler {
 	})
 }
 
+func (s *Server) adminOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !currentUser(r).IsAdmin {
+			writeFail(w, http.StatusForbidden, "需要管理员权限", "ADMIN_REQUIRED")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func currentUser(r *http.Request) AuthUser {
 	user, _ := r.Context().Value(userContextKey).(AuthUser)
 	return user
@@ -208,7 +262,12 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC()
-	user := UserRecord{AuthUser: AuthUser{ID: uuid.NewString(), Username: request.Username, DisplayName: request.DisplayName, CreatedAt: now}, PasswordHash: string(hash)}
+	userCount, err := s.store.CountUsers(r.Context())
+	if err != nil {
+		writeFail(w, http.StatusInternalServerError, "读取用户数量失败", "USER_COUNT_FAILED")
+		return
+	}
+	user := UserRecord{AuthUser: AuthUser{ID: uuid.NewString(), Username: request.Username, DisplayName: request.DisplayName, IsAdmin: userCount == 0, CreatedAt: now}, PasswordHash: string(hash)}
 	if err := s.store.CreateUser(r.Context(), user); err != nil {
 		writeFail(w, http.StatusConflict, "用户名已存在", "USERNAME_EXISTS")
 		return
@@ -270,38 +329,22 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) { writeOK(w, current
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) { writeOK[any](w, nil) }
 
 func (s *Server) getAPIConfig(w http.ResponseWriter, r *http.Request) {
-	user := currentUser(r)
-	config, ok, err := s.store.GetAPIConfig(r.Context(), user.ID)
+	config, ok, err := s.publicSiteAPIConfig(r.Context())
 	if err != nil {
 		writeFail(w, http.StatusInternalServerError, "读取用户配置失败", "CONFIG_READ_FAILED")
 		return
 	}
 	if !ok {
-		if s.Config.DefaultAPIBaseURL == "" || s.Config.DefaultAPIKey == "" {
-			writeOK[*APIConfigResponse](w, nil)
-			return
-		}
-		config = s.buildAPIConfig(s.Config.DefaultAPIBaseURL, "", s.Config.DefaultImageModel, s.Config.DefaultChatModel, true)
+		writeOK[*APIConfigResponse](w, nil)
+		return
 	}
+	config.APIKey = ""
+	config.ServerDefault = true
 	writeOK(w, config)
 }
 
 func (s *Server) saveAPIConfig(w http.ResponseWriter, r *http.Request) {
-	var request APIConfigRequest
-	if !decodeJSON(w, r, &request) {
-		return
-	}
-	if strings.TrimSpace(request.BaseURL) == "" || strings.TrimSpace(request.APIKey) == "" {
-		writeFail(w, http.StatusBadRequest, "Base URL 和 API Key 不能为空", "VALIDATION_ERROR")
-		return
-	}
-	config := s.buildAPIConfig(request.BaseURL, request.APIKey, request.Model, request.ChatModel, false)
-	saved, err := s.store.SaveAPIConfig(r.Context(), currentUser(r).ID, config)
-	if err != nil {
-		writeFail(w, http.StatusInternalServerError, "保存用户配置失败", "CONFIG_SAVE_FAILED")
-		return
-	}
-	writeOK(w, saved)
+	writeFail(w, http.StatusForbidden, "公益站点由管理员统一配置中转站", "USER_CONFIG_DISABLED")
 }
 
 func (s *Server) buildAPIConfig(baseURL, apiKey, model, chatModel string, serverDefault bool) APIConfigResponse {
@@ -313,6 +356,29 @@ func (s *Server) buildAPIConfig(baseURL, apiKey, model, chatModel string, server
 		chatModel = s.Config.DefaultChatModel
 	}
 	return APIConfigResponse{BaseURL: baseURL, APIKey: strings.TrimSpace(apiKey), Model: model, ChatModel: chatModel, TextToImageURL: joinURL(baseURL, "images/generations"), ImageToImageURL: joinURL(baseURL, "images/edits"), UpdatedAt: time.Now().UTC(), ServerDefault: serverDefault}
+}
+
+func (s *Server) publicSiteAPIConfig(ctx context.Context) (APIConfigResponse, bool, error) {
+	config, ok, err := s.store.GetSystemAPIConfig(ctx)
+	if err != nil {
+		return APIConfigResponse{}, false, err
+	}
+	if ok {
+		config.ServerDefault = true
+		return config, true, nil
+	}
+	if s.Config.DefaultAPIBaseURL == "" || s.Config.DefaultAPIKey == "" {
+		return APIConfigResponse{}, false, nil
+	}
+	return s.buildAPIConfig(s.Config.DefaultAPIBaseURL, s.Config.DefaultAPIKey, s.Config.DefaultImageModel, s.Config.DefaultChatModel, true), true, nil
+}
+
+func (s *Server) upstreamAPIConfig(ctx context.Context) (APIConfigResponse, bool) {
+	config, ok, err := s.publicSiteAPIConfig(ctx)
+	if err != nil || !ok || config.BaseURL == "" || config.APIKey == "" {
+		return APIConfigResponse{}, false
+	}
+	return config, true
 }
 
 func joinURL(baseURL, path string) string {
@@ -463,13 +529,10 @@ func (s *Server) proxyImageRequest(w http.ResponseWriter, r *http.Request, fallb
 	upstreamURL := r.Header.Get("X-Livart-Upstream-Url")
 	apiKey := r.Header.Get("X-Livart-Api-Key")
 	if upstreamURL == "" || apiKey == "" {
-		config, ok, _ := s.store.GetAPIConfig(r.Context(), currentUser(r).ID)
+		config, ok := s.upstreamAPIConfig(r.Context())
 		if ok {
 			upstreamURL = map[bool]string{true: config.TextToImageURL, false: config.ImageToImageURL}[fallbackPath == "images/generations"]
 			apiKey = config.APIKey
-		} else if s.Config.DefaultAPIBaseURL != "" && s.Config.DefaultAPIKey != "" {
-			upstreamURL = joinURL(s.Config.DefaultAPIBaseURL, fallbackPath)
-			apiKey = s.Config.DefaultAPIKey
 		}
 	}
 	if upstreamURL == "" || apiKey == "" {
@@ -790,6 +853,73 @@ func (s *Server) downloadExport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", exportFile.Filename))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(exportFile.Bytes)
+}
+
+func (s *Server) adminGetConfig(w http.ResponseWriter, r *http.Request) {
+	config, ok, err := s.publicSiteAPIConfig(r.Context())
+	if err != nil {
+		writeFail(w, http.StatusInternalServerError, "读取全站配置失败", "ADMIN_CONFIG_READ_FAILED")
+		return
+	}
+	if !ok {
+		writeOK[*APIConfigResponse](w, nil)
+		return
+	}
+	writeOK(w, config)
+}
+
+func (s *Server) adminSaveConfig(w http.ResponseWriter, r *http.Request) {
+	var request APIConfigRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	if strings.TrimSpace(request.BaseURL) == "" || strings.TrimSpace(request.APIKey) == "" {
+		writeFail(w, http.StatusBadRequest, "Base URL 和 API Key 不能为空", "VALIDATION_ERROR")
+		return
+	}
+	config := s.buildAPIConfig(request.BaseURL, request.APIKey, request.Model, request.ChatModel, true)
+	saved, err := s.store.SaveSystemAPIConfig(r.Context(), config)
+	if err != nil {
+		writeFail(w, http.StatusInternalServerError, "保存全站配置失败", "ADMIN_CONFIG_SAVE_FAILED")
+		return
+	}
+	writeOK(w, saved)
+}
+
+func (s *Server) adminSummary(w http.ResponseWriter, r *http.Request) {
+	summary, err := s.store.AdminSummary(r.Context())
+	if err != nil {
+		writeFail(w, http.StatusInternalServerError, "读取管理概览失败", "ADMIN_SUMMARY_FAILED")
+		return
+	}
+	writeOK(w, summary)
+}
+
+func (s *Server) adminUsers(w http.ResponseWriter, r *http.Request) {
+	users, err := s.store.AdminListUsers(r.Context())
+	if err != nil {
+		writeFail(w, http.StatusInternalServerError, "读取用户列表失败", "ADMIN_USERS_FAILED")
+		return
+	}
+	writeOK(w, users)
+}
+
+func (s *Server) adminCanvases(w http.ResponseWriter, r *http.Request) {
+	canvases, err := s.store.AdminListCanvases(r.Context())
+	if err != nil {
+		writeFail(w, http.StatusInternalServerError, "读取画布列表失败", "ADMIN_CANVASES_FAILED")
+		return
+	}
+	writeOK(w, canvases)
+}
+
+func (s *Server) adminAssets(w http.ResponseWriter, r *http.Request) {
+	assets, err := s.store.AdminListAssets(r.Context())
+	if err != nil {
+		writeFail(w, http.StatusInternalServerError, "读取资源列表失败", "ADMIN_ASSETS_FAILED")
+		return
+	}
+	writeOK(w, assets)
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {

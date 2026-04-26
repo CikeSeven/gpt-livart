@@ -43,6 +43,7 @@ func Load() Config {
 			ExportTTL:            time.Hour,
 			RequestTimeout:       time.Duration(envInt("WAIT_TIMEOUT_SECONDS", 120)) * time.Second,
 			LocalObjectStorePath: env("LOCAL_OBJECT_STORE_PATH", "./data/objects"),
+			StaticDir:            env("STATIC_DIR", "./frontend/dist"),
 		},
 	}
 }

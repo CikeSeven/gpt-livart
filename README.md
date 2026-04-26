@@ -1,8 +1,8 @@
 # gpt-livart
 
-gpt-livart 是一个面向 AI 图像创作工作台的 Go 后端项目，提供账号登录、用户 API 配置、永久画布、图片资源管理、AI 图像接口代理、异步生图状态、WebSocket 推送和交付包导出等能力。
+gpt-livart 是一个面向 AI 图像创作工作台的全栈项目，包含 React/Vite 前端和 Go 后端，提供账号登录、用户 API 配置、永久画布、图片资源管理、AI 图像接口代理、异步生图状态、WebSocket 推送和交付包导出等能力。
 
-项目目标是为无限画布式 AI 创作体验提供一个轻量、可部署、易维护的服务端基础。前端可以围绕画布组织图片、提示词、局部编辑和派生结果，后端负责保存项目状态、管理图片资产、隔离用户配置，并把图像生成请求代理到 OpenAI Images API 兼容服务。
+项目目标是提供一个可以直接部署使用的无限画布式 AI 创作工作台。前端围绕画布组织图片、提示词、局部编辑和派生结果，后端负责保存项目状态、管理图片资产、隔离用户配置，并把图像生成请求代理到 OpenAI Images API 兼容服务。
 
 ## 功能特性
 
@@ -14,11 +14,16 @@ gpt-livart 是一个面向 AI 图像创作工作台的 Go 后端项目，提供�
 - **生图任务**：提供 image job 提交、状态读取和 WebSocket 状态推送接口。
 - **图片引用分析**：为 `@图片` 多图编辑场景提供基础角色分析能力。
 - **导出交付**：支持把画布图片资源打包为 ZIP 文件下载。
-- **Docker 部署**：提供 PostgreSQL、MinIO 和 Go 服务的 compose 示例。
+- **前后端一体部署**：Docker 构建前端静态资源，并由 Go 服务在同一端口托管页面和 API。
+- **Docker 部署**：提供 PostgreSQL、MinIO 和全栈应用的 compose 示例。
 
 ## 技术栈
 
 - Go
+- React
+- TypeScript
+- Vite
+- Tailwind CSS
 - PostgreSQL
 - MinIO / S3-compatible object storage
 - JWT
@@ -29,6 +34,7 @@ gpt-livart 是一个面向 AI 图像创作工作台的 Go 后端项目，提供�
 
 ```text
 cmd/livart/        应用入口
+frontend/          React/Vite 前端应用
 internal/api/      HTTP API、鉴权中间件、WebSocket、测试内存实现
 internal/app/      服务依赖组装
 internal/assets/   本地文件和 MinIO 对象存储实现
@@ -41,7 +47,9 @@ docs/              设计与实现计划文档
 
 ### 本地运行
 
-先准备 PostgreSQL，然后执行：
+先准备 PostgreSQL，然后分别启动后端和前端开发服务。
+
+后端：
 
 ```bash
 cp .env.example .env
@@ -51,7 +59,15 @@ set +a
 go run ./cmd/livart
 ```
 
-服务默认监听 `8080` 端口，可通过 `SERVER_PORT` 或 `LIVART_PORT` 修改。
+前端：
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+后端默认监听 `8080` 端口，可通过 `SERVER_PORT` 或 `LIVART_PORT` 修改。前端开发服务默认监听 `3000`，并把 `/api` 和 `/ws` 代理到后端。
 
 ### Docker Compose
 
@@ -63,7 +79,13 @@ Compose 会启动：
 
 - `postgres`：保存用户、画布、快照和资源元数据。
 - `minio`：保存上传图片和生成图片资源。
-- `livart-go`：Go 后端服务。
+- `livart-go`：全栈应用服务，包含前端静态页面和 Go API。
+
+启动后访问：
+
+- 应用页面：`http://localhost:8080`
+- 后端健康检查：`http://localhost:8080/api/health`
+- MinIO 控制台：`http://127.0.0.1:9001`
 
 ## 环境变量
 
@@ -72,12 +94,15 @@ Compose 会启动：
 - `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` / `DB_PASSWORD`
 - `MINIO_ENDPOINT` / `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` / `MINIO_BUCKET`
 - `JWT_SECRET` / `JWT_TTL_DAYS`
+- `STATIC_DIR`
 - `LIVART_DEFAULT_API_BASE_URL` / `LIVART_DEFAULT_API_KEY`
 - `LIVART_DEFAULT_IMAGE_MODEL` / `LIVART_DEFAULT_CHAT_MODEL`
 
 如果配置了 `LIVART_DEFAULT_API_BASE_URL` 和 `LIVART_DEFAULT_API_KEY`，新用户可以直接使用服务端默认 AI 网关；否则用户需要在页面中保存自己的 API 配置。
 
 ## 接口概览
+
+Docker 部署时，`GET /` 会返回前端页面；非 API 路由会回退到前端 `index.html`，用于支持单页应用路由。
 
 - `POST /api/auth/register`：注册账号。
 - `POST /api/auth/login`：登录账号。
@@ -101,6 +126,7 @@ Compose 会启动：
 ```bash
 go test ./...
 go build ./cmd/livart
+cd frontend && npm run build
 ```
 
 ## 参考项目

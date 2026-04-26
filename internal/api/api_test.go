@@ -7,6 +7,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -84,7 +86,55 @@ func TestAuthRegisterLoginAndMeUseLivartEnvelope(t *testing.T) {
 	}
 }
 
-func TestUserConfigFallsBackToServerDefaultAndCanBeSaved(t *testing.T) {
+func TestFirstRegisteredUserIsAdminAndCanReadAdminSummary(t *testing.T) {
+	server := NewTestServer(t)
+
+	adminRegister := requestJSON(t, server.Handler, http.MethodPost, "/api/auth/register", "", map[string]any{
+		"username": "first-admin",
+		"password": "secret123",
+	})
+	if adminRegister.Code != http.StatusOK {
+		t.Fatalf("admin register status = %d body=%s", adminRegister.Code, adminRegister.Body.String())
+	}
+	adminSession := decodeEnvelope[AuthResponse](t, adminRegister.Body)
+	if !adminSession.Data.User.IsAdmin {
+		t.Fatalf("expected first registered user to be admin: %#v", adminSession.Data.User)
+	}
+
+	userRegister := requestJSON(t, server.Handler, http.MethodPost, "/api/auth/register", "", map[string]any{
+		"username": "normal-user",
+		"password": "secret123",
+	})
+	if userRegister.Code != http.StatusOK {
+		t.Fatalf("user register status = %d body=%s", userRegister.Code, userRegister.Body.String())
+	}
+	userSession := decodeEnvelope[AuthResponse](t, userRegister.Body)
+	if userSession.Data.User.IsAdmin {
+		t.Fatalf("expected second registered user to be normal user: %#v", userSession.Data.User)
+	}
+
+	forbidden := httptest.NewRecorder()
+	forbiddenReq := httptest.NewRequest(http.MethodGet, "/api/admin/summary", nil)
+	forbiddenReq.Header.Set("Authorization", "Bearer "+userSession.Data.Token)
+	server.Handler.ServeHTTP(forbidden, forbiddenReq)
+	if forbidden.Code != http.StatusForbidden {
+		t.Fatalf("expected normal user forbidden, status=%d body=%s", forbidden.Code, forbidden.Body.String())
+	}
+
+	allowed := httptest.NewRecorder()
+	allowedReq := httptest.NewRequest(http.MethodGet, "/api/admin/summary", nil)
+	allowedReq.Header.Set("Authorization", "Bearer "+adminSession.Data.Token)
+	server.Handler.ServeHTTP(allowed, allowedReq)
+	if allowed.Code != http.StatusOK {
+		t.Fatalf("expected admin summary, status=%d body=%s", allowed.Code, allowed.Body.String())
+	}
+	summary := decodeEnvelope[AdminSummary](t, allowed.Body)
+	if summary.Data.UserCount != 2 || summary.Data.AdminCount != 1 {
+		t.Fatalf("unexpected admin summary: %#v", summary.Data)
+	}
+}
+
+func TestUserConfigFallsBackToServerDefault(t *testing.T) {
 	server := NewTestServer(t)
 	server.Config.DefaultAPIBaseURL = "https://gateway.example/v1"
 	server.Config.DefaultAPIKey = "server-key"
@@ -98,19 +148,59 @@ func TestUserConfigFallsBackToServerDefaultAndCanBeSaved(t *testing.T) {
 	if !envelope.Success || !envelope.Data.ServerDefault || envelope.Data.APIKey != "" || envelope.Data.BaseURL != "https://gateway.example/v1" {
 		t.Fatalf("unexpected default config: %#v", envelope)
 	}
+}
 
-	save := requestJSON(t, server.Handler, http.MethodPut, "/api/user/config", token, map[string]any{
-		"baseUrl":   "https://user.example/v1/",
+func TestPublicSiteUsesAdminManagedGlobalAPIConfig(t *testing.T) {
+	server := NewTestServer(t)
+
+	adminRegister := requestJSON(t, server.Handler, http.MethodPost, "/api/auth/register", "", map[string]any{
+		"username": "site-admin",
+		"password": "secret123",
+	})
+	adminSession := decodeEnvelope[AuthResponse](t, adminRegister.Body)
+	adminToken := adminSession.Data.Token
+
+	userRegister := requestJSON(t, server.Handler, http.MethodPost, "/api/auth/register", "", map[string]any{
+		"username": "public-user",
+		"password": "secret123",
+	})
+	userSession := decodeEnvelope[AuthResponse](t, userRegister.Body)
+	userToken := userSession.Data.Token
+
+	userSave := requestJSON(t, server.Handler, http.MethodPut, "/api/user/config", userToken, map[string]any{
+		"baseUrl":   "https://user.example/v1",
 		"apiKey":    "user-key",
 		"model":     "gpt-image-2",
 		"chatModel": "gpt-5.5",
 	})
-	if save.Code != http.StatusOK {
-		t.Fatalf("save status = %d body=%s", save.Code, save.Body.String())
+	if userSave.Code != http.StatusForbidden {
+		t.Fatalf("expected user config save forbidden, status=%d body=%s", userSave.Code, userSave.Body.String())
 	}
-	saved := decodeEnvelope[APIConfigResponse](t, save.Body)
-	if saved.Data.ServerDefault || saved.Data.BaseURL != "https://user.example/v1" || saved.Data.APIKey != "user-key" {
-		t.Fatalf("unexpected saved config: %#v", saved)
+
+	adminSave := requestJSON(t, server.Handler, http.MethodPut, "/api/admin/config", adminToken, map[string]any{
+		"baseUrl":   "https://public-gateway.example/v1/",
+		"apiKey":    "global-key",
+		"model":     "gpt-image-2",
+		"chatModel": "gpt-5.5",
+	})
+	if adminSave.Code != http.StatusOK {
+		t.Fatalf("admin config save status=%d body=%s", adminSave.Code, adminSave.Body.String())
+	}
+	adminConfig := decodeEnvelope[APIConfigResponse](t, adminSave.Body)
+	if adminConfig.Data.BaseURL != "https://public-gateway.example/v1" || adminConfig.Data.APIKey != "global-key" || !adminConfig.Data.ServerDefault {
+		t.Fatalf("unexpected admin saved config: %#v", adminConfig.Data)
+	}
+
+	userLoad := httptest.NewRecorder()
+	userLoadReq := httptest.NewRequest(http.MethodGet, "/api/user/config", nil)
+	userLoadReq.Header.Set("Authorization", "Bearer "+userToken)
+	server.Handler.ServeHTTP(userLoad, userLoadReq)
+	if userLoad.Code != http.StatusOK {
+		t.Fatalf("user config load status=%d body=%s", userLoad.Code, userLoad.Body.String())
+	}
+	publicConfig := decodeEnvelope[APIConfigResponse](t, userLoad.Body)
+	if publicConfig.Data.BaseURL != "https://public-gateway.example/v1" || publicConfig.Data.APIKey != "" || !publicConfig.Data.ServerDefault {
+		t.Fatalf("expected sanitized global config for user: %#v", publicConfig.Data)
 	}
 }
 
@@ -229,5 +319,27 @@ func TestImageReferenceAnalysisAndImageJobs(t *testing.T) {
 	}
 	if submission.JobID == "" || submission.Status == "" || submission.OriginalPrompt != "画一只猫" {
 		t.Fatalf("unexpected job submission: %#v", submission)
+	}
+}
+
+func TestStaticFrontendServesIndexAndSPAFallback(t *testing.T) {
+	staticDir := t.TempDir()
+	indexPath := filepath.Join(staticDir, "index.html")
+	if err := os.WriteFile(indexPath, []byte(`<!doctype html><title>livart app</title><div id="root"></div>`), 0o644); err != nil {
+		t.Fatalf("write index.html: %v", err)
+	}
+
+	server := NewServer(Config{JWTSecret: "test-secret-at-least-32-bytes", StaticDir: staticDir}, newMemoryStore(), newMemoryObjectStore())
+
+	root := httptest.NewRecorder()
+	server.Handler.ServeHTTP(root, httptest.NewRequest(http.MethodGet, "/", nil))
+	if root.Code != http.StatusOK || !strings.Contains(root.Body.String(), "livart app") {
+		t.Fatalf("expected index at root, status=%d body=%s", root.Code, root.Body.String())
+	}
+
+	fallback := httptest.NewRecorder()
+	server.Handler.ServeHTTP(fallback, httptest.NewRequest(http.MethodGet, "/projects/demo", nil))
+	if fallback.Code != http.StatusOK || !strings.Contains(fallback.Body.String(), "livart app") {
+		t.Fatalf("expected SPA fallback, status=%d body=%s", fallback.Code, fallback.Body.String())
 	}
 }

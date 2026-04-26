@@ -29,6 +29,7 @@ type Config struct {
 	PublicBaseURL        string
 	RequestTimeout       time.Duration
 	LocalObjectStorePath string
+	StaticDir            string
 }
 
 func (c *Config) normalize() {
@@ -53,12 +54,16 @@ func (c *Config) normalize() {
 	if c.RequestTimeout <= 0 {
 		c.RequestTimeout = 10 * time.Minute
 	}
+	if c.StaticDir == "" {
+		c.StaticDir = "./frontend/dist"
+	}
 }
 
 type AuthUser struct {
 	ID          string    `json:"id"`
 	Username    string    `json:"username"`
 	DisplayName string    `json:"displayName"`
+	IsAdmin     bool      `json:"isAdmin"`
 	CreatedAt   time.Time `json:"createdAt,omitempty"`
 }
 
@@ -203,4 +208,21 @@ type ExportFile struct {
 	Filename  string
 	Bytes     []byte
 	ExpiresAt time.Time
+}
+
+type AdminSummary struct {
+	UserCount   int `json:"userCount"`
+	AdminCount  int `json:"adminCount"`
+	CanvasCount int `json:"canvasCount"`
+	AssetCount  int `json:"assetCount"`
+}
+
+type AdminCanvas struct {
+	ID        string    `json:"id"`
+	Title     string    `json:"title"`
+	UserID    string    `json:"userId"`
+	Username  string    `json:"username"`
+	CreatedAt time.Time `json:"createdAt,omitempty"`
+	UpdatedAt time.Time `json:"updatedAt,omitempty"`
+	Revision  int64     `json:"revision"`
 }

@@ -22,18 +22,26 @@ func NewTestServer(t *testing.T) *TestServer {
 }
 
 type memoryStore struct {
-	mu          sync.RWMutex
-	usersByID   map[string]UserRecord
-	usersByName map[string]string
-	configs     map[string]APIConfigResponse
-	canvases    map[string]CanvasResponse
-	canvasUsers map[string]string
-	assets      map[string]AssetResponse
-	exports     map[string]ExportFile
+	mu              sync.RWMutex
+	usersByID       map[string]UserRecord
+	usersByName     map[string]string
+	configs         map[string]APIConfigResponse
+	systemConfig    APIConfigResponse
+	hasSystemConfig bool
+	canvases        map[string]CanvasResponse
+	canvasUsers     map[string]string
+	assets          map[string]AssetResponse
+	exports         map[string]ExportFile
 }
 
 func newMemoryStore() *memoryStore {
 	return &memoryStore{usersByID: map[string]UserRecord{}, usersByName: map[string]string{}, configs: map[string]APIConfigResponse{}, canvases: map[string]CanvasResponse{}, canvasUsers: map[string]string{}, assets: map[string]AssetResponse{}, exports: map[string]ExportFile{}}
+}
+
+func (m *memoryStore) CountUsers(ctx context.Context) (int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.usersByID), nil
 }
 
 func (m *memoryStore) CreateUser(ctx context.Context, user UserRecord) error {
@@ -79,6 +87,22 @@ func (m *memoryStore) SaveAPIConfig(ctx context.Context, userID string, config A
 	defer m.mu.Unlock()
 	config.UpdatedAt = time.Now().UTC()
 	m.configs[userID] = config
+	return config, nil
+}
+
+func (m *memoryStore) GetSystemAPIConfig(ctx context.Context) (APIConfigResponse, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.systemConfig, m.hasSystemConfig, nil
+}
+
+func (m *memoryStore) SaveSystemAPIConfig(ctx context.Context, config APIConfigResponse) (APIConfigResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	config.UpdatedAt = time.Now().UTC()
+	config.ServerDefault = true
+	m.systemConfig = config
+	m.hasSystemConfig = true
 	return config, nil
 }
 
@@ -181,6 +205,50 @@ func (m *memoryStore) GetExport(ctx context.Context, userID string, exportID str
 		return ExportFile{}, errNotFound
 	}
 	return export, nil
+}
+
+func (m *memoryStore) AdminSummary(ctx context.Context) (AdminSummary, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	adminCount := 0
+	for _, user := range m.usersByID {
+		if user.IsAdmin {
+			adminCount++
+		}
+	}
+	return AdminSummary{UserCount: len(m.usersByID), AdminCount: adminCount, CanvasCount: len(m.canvases), AssetCount: len(m.assets)}, nil
+}
+
+func (m *memoryStore) AdminListUsers(ctx context.Context) ([]AuthUser, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	users := make([]AuthUser, 0, len(m.usersByID))
+	for _, user := range m.usersByID {
+		users = append(users, user.AuthUser)
+	}
+	return users, nil
+}
+
+func (m *memoryStore) AdminListCanvases(ctx context.Context) ([]AdminCanvas, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	canvases := make([]AdminCanvas, 0, len(m.canvases))
+	for id, canvas := range m.canvases {
+		userID := m.canvasUsers[id]
+		user := m.usersByID[userID]
+		canvases = append(canvases, AdminCanvas{ID: canvas.ID, Title: canvas.Title, UserID: userID, Username: user.Username, CreatedAt: canvas.CreatedAt, UpdatedAt: canvas.UpdatedAt, Revision: canvas.Revision})
+	}
+	return canvases, nil
+}
+
+func (m *memoryStore) AdminListAssets(ctx context.Context) ([]AssetResponse, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	assets := make([]AssetResponse, 0, len(m.assets))
+	for _, asset := range m.assets {
+		assets = append(assets, asset)
+	}
+	return assets, nil
 }
 
 type memoryObjectStore struct {
