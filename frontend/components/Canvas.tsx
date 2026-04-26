@@ -562,7 +562,7 @@ const ImageGenerationSkeleton: React.FC<{ hasPreview: boolean }> = ({ hasPreview
 const Canvas: React.FC<CanvasProps> = ({ 
   items, zoom, onZoomChange, pan, onPanChange, backgroundColor, onItemUpdate, onItemDelete, onItemDeleteMultiple, onItemAdd, onAddTextAt, onAddImageAt, onAddToChat, onChatMessage, onImagePromptRequest, onBeforeCanvasMutation, canvasTool, onCanvasToolChange, selectedIds, setSelectedIds
 }) => {
-  const [dragState, setDragState] = useState<{ id: string, startX: number, startY: number } | null>(null);
+  const [dragState, setDragState] = useState<{ id: string, startX: number, startY: number, wasSelected: boolean, moved: boolean } | null>(null);
   const [resizeState, setResizeState] = useState<{ 
     id: string, direction: ResizeDirection, startX: number, startY: number, 
     startW: number, startH: number, startItemX: number, startItemY: number
@@ -1350,11 +1350,19 @@ const Canvas: React.FC<CanvasProps> = ({
       items.filter(i => selectedIds.includes(i.id)).forEach(item => {
         onItemUpdate(item.id, { x: item.x + dx, y: item.y + dy });
       });
+      if (!dragState.moved && Math.hypot(e.clientX - dragState.startX, e.clientY - dragState.startY) > 3) {
+        setDragState({ ...dragState, moved: true });
+      }
       setLastMousePos({ x: e.clientX, y: e.clientY });
     }
   };
 
-  const handleMouseUp = () => {
+  const handleMouseUp = (event: React.MouseEvent) => {
+    const completedDragState = dragState;
+    const completedDragMoved = !!completedDragState && (
+      completedDragState.moved ||
+      Math.hypot(event.clientX - completedDragState.startX, event.clientY - completedDragState.startY) > 3
+    );
     if (isDrawing && selectedItemHasImageMaskTool) {
       setIsDrawing(false);
       if (activeTool === 'brush') {
@@ -1387,6 +1395,9 @@ const Canvas: React.FC<CanvasProps> = ({
     setIsPanning(false);
     setDragState(null);
     setResizeState(null);
+    if (completedDragState?.wasSelected && !completedDragMoved) {
+      setSelectedIds(selectedIds.filter(id => id !== completedDragState.id));
+    }
   };
 
   const getDroppedImageFiles = (fileList: FileList) => {
@@ -1429,10 +1440,11 @@ const Canvas: React.FC<CanvasProps> = ({
     
     e.stopPropagation();
     onBeforeCanvasMutation();
-    if (!selectedIds.includes(id)) {
+    const wasSelected = selectedIds.includes(id);
+    if (!wasSelected) {
       setSelectedIds(e.shiftKey ? [...selectedIds, id] : [id]);
     }
-    setDragState({ id, startX: e.clientX, startY: e.clientY });
+    setDragState({ id, startX: e.clientX, startY: e.clientY, wasSelected, moved: false });
     setLastMousePos({ x: e.clientX, y: e.clientY });
     setContextMenu(null);
   };

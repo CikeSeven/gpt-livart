@@ -4,6 +4,7 @@ import { Loader2, Hammer, Send } from 'lucide-react';
 import { IMAGE_ASPECT_RATIO_OPTIONS } from '../services/imageSizing';
 import { getImagePreviewFitStyle, getThumbnailImageSrc } from '../services/imageSources';
 import {
+  IMAGE_REFERENCE_TOKEN_PATTERN,
   getImageReferenceDisplayText,
   insertImageMention,
   resolveMentionedImageReferences,
@@ -16,7 +17,7 @@ interface SidebarProps {
   isThinking: boolean;
   onSendMessage: (text: string, aspectRatio: ImageAspectRatio) => void;
   contextImage: CanvasItem | null;
-  promptSeed?: { id: string; imageId: string; prompt?: string } | null;
+  promptSeed?: { id: string; imageId?: string; imageIds?: string[]; prompt?: string } | null;
   inputResetKey?: number;
   imageItems: CanvasItem[];
   onSelectContextImage: (item: CanvasItem) => void;
@@ -71,13 +72,28 @@ const Sidebar: React.FC<SidebarProps> = ({ messages, isThinking, onSendMessage, 
     if (!promptSeed) return;
     if (appliedPromptSeedIdRef.current === promptSeed.id) return;
 
-    const targetImage = completedImageItems.find(item => item.id === promptSeed.imageId);
-    if (!targetImage) return;
+    const targetImageIds = promptSeed.imageIds?.length ? promptSeed.imageIds : promptSeed.imageId ? [promptSeed.imageId] : [];
+    const targetImages = targetImageIds
+      .map(imageId => completedImageItems.find(item => item.id === imageId))
+      .filter((item): item is CanvasItem => !!item);
 
     appliedPromptSeedIdRef.current = promptSeed.id;
-    lastContextImageIdRef.current = targetImage.id;
-    const mention = insertImageMention('', targetImage, completedImageItems);
-    setInputValue(promptSeed.prompt ? `${mention}${promptSeed.prompt}` : mention);
+    lastContextImageIdRef.current = targetImages[0]?.id || null;
+    const mentions = targetImages.reduce(
+      (value, item) => insertImageMention(value, item, completedImageItems),
+      ''
+    );
+    if (promptSeed.prompt) {
+      setInputValue(`${mentions}${promptSeed.prompt}`);
+      return;
+    }
+    setInputValue(prevValue => {
+      const promptWithoutImageMentions = prevValue
+        .replace(IMAGE_REFERENCE_TOKEN_PATTERN, '')
+        .replace(/[ \t]{2,}/g, ' ')
+        .trimStart();
+      return `${mentions}${promptWithoutImageMentions}`;
+    });
   }, [completedImageItems, promptSeed]);
 
   const handleInputChange = (nextValue: string) => {

@@ -68,7 +68,8 @@ const DEFAULT_CANVAS_BACKGROUND_COLOR = '#fcfcfc';
 type ImageEditMode = 'local-redraw' | 'remover';
 type SidebarPromptSeed = {
   id: string;
-  imageId: string;
+  imageId?: string;
+  imageIds?: string[];
   prompt?: string;
 };
 type CanvasHistorySnapshot = {
@@ -1289,17 +1290,24 @@ function App() {
     setSelectedImageEditMode(prev => prev && ids.includes(prev.imageId) ? null : prev);
   };
 
-  const focusImageInSidebarInput = (item: CanvasItem, prompt?: string, mode?: ImageEditMode) => {
-    if (item.type !== 'image' || item.status !== 'completed' || !item.content) return;
+  const focusImagesInSidebarInput = (imageItems: CanvasItem[], prompt?: string, mode?: ImageEditMode) => {
+    const completedImages = imageItems.filter(item => item.type === 'image' && item.status === 'completed' && !!item.content);
+    if (completedImages.length === 0) return;
 
-    setContextImage(item);
+    const primaryImage = completedImages[0];
+    setContextImage(primaryImage);
     setShowSidebar(true);
     setSidebarPromptSeed({
-      id: `${item.id}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      imageId: item.id,
+      id: `${completedImages.map(item => item.id).join('-')}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      imageId: primaryImage.id,
+      imageIds: completedImages.map(item => item.id),
       prompt
     });
-    setSelectedImageEditMode(mode ? { imageId: item.id, mode } : null);
+    setSelectedImageEditMode(mode && completedImages.length === 1 ? { imageId: primaryImage.id, mode } : null);
+  };
+
+  const focusImageInSidebarInput = (item: CanvasItem, prompt?: string, mode?: ImageEditMode) => {
+    focusImagesInSidebarInput([item], prompt, mode);
   };
 
   const handleCanvasSelectionChange = (ids: string[]) => {
@@ -1309,16 +1317,26 @@ function App() {
       prev && ids.length === 1 && ids[0] === prev.imageId ? prev : null
     ));
 
-    if (ids.length !== 1) return;
+    const selectedImages = ids
+      .map(id => items.find(item => (
+        item.id === id &&
+        item.type === 'image' &&
+        item.status === 'completed' &&
+        !!item.content
+      )))
+      .filter((item): item is CanvasItem => !!item);
 
-    const selectedImage = items.find(item => (
-      item.id === ids[0] &&
-      item.type === 'image' &&
-      item.status === 'completed' &&
-      !!item.content
-    ));
-    if (selectedImage) {
-      focusImageInSidebarInput(selectedImage);
+    if (selectedImages.length > 0) {
+      focusImagesInSidebarInput(selectedImages);
+      return;
+    }
+
+    if (selectedImages.length === 0) {
+      setContextImage(null);
+      setSidebarPromptSeed({
+        id: `clear-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        imageIds: []
+      });
     }
   };
 
