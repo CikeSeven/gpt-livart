@@ -132,6 +132,22 @@ func TestFirstRegisteredUserIsAdminAndCanReadAdminSummary(t *testing.T) {
 	if summary.Data.UserCount != 2 || summary.Data.AdminCount != 1 {
 		t.Fatalf("unexpected admin summary: %#v", summary.Data)
 	}
+
+	assets := httptest.NewRecorder()
+	assetsReq := httptest.NewRequest(http.MethodGet, "/api/admin/assets", nil)
+	assetsReq.Header.Set("Authorization", "Bearer "+adminSession.Data.Token)
+	server.Handler.ServeHTTP(assets, assetsReq)
+	if assets.Code != http.StatusOK || !strings.Contains(assets.Body.String(), `"data":[]`) {
+		t.Fatalf("expected empty admin assets to include data array, status=%d body=%s", assets.Code, assets.Body.String())
+	}
+
+	canvases := httptest.NewRecorder()
+	canvasesReq := httptest.NewRequest(http.MethodGet, "/api/admin/canvases", nil)
+	canvasesReq.Header.Set("Authorization", "Bearer "+adminSession.Data.Token)
+	server.Handler.ServeHTTP(canvases, canvasesReq)
+	if canvases.Code != http.StatusOK || !strings.Contains(canvases.Body.String(), `"data":[]`) {
+		t.Fatalf("expected empty admin canvases to include data array, status=%d body=%s", canvases.Code, canvases.Body.String())
+	}
 }
 
 func TestUserConfigFallsBackToServerDefault(t *testing.T) {
