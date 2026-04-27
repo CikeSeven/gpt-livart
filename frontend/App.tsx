@@ -1769,6 +1769,7 @@ function App() {
   };
 
   const handleLogout = async () => {
+    if (!window.confirm('确定要退出当前账号吗？')) return;
     flushQueuedCanvasSave();
     await logout();
     localStorage.removeItem(LAST_PROJECT_STORAGE_KEY);

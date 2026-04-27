@@ -145,7 +145,7 @@ const AdminPage: React.FC<AdminPageProps> = ({ session, onLogout }) => {
             <Shield size={24} />
           </div>
           <h1 className="mt-5 text-2xl font-black tracking-tighter">没有后台权限</h1>
-          <p className="mt-3 text-sm font-bold leading-6 text-gray-500">只有第一个注册的用户会自动成为管理员。请使用管理员账号登录后访问后台。</p>
+          <p className="mt-3 text-sm font-bold leading-6 text-gray-500">当前账号没有访问管理后台的权限。请切换到管理员账号后重试。</p>
           <div className="mt-6 flex gap-3">
             <a href="/" className="flex-1 rounded-2xl bg-black px-4 py-3 text-sm font-black text-white">返回画布</a>
             <button onClick={onLogout} className="flex-1 rounded-2xl border border-gray-200 px-4 py-3 text-sm font-black text-gray-700">退出登录</button>
