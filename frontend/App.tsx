@@ -1,6 +1,6 @@
 
 import React, { useEffect, useRef, useState } from 'react';
-import { PanelRightClose, PanelRight, FolderPlus, LogOut, Loader2, X, Download, ChevronDown } from 'lucide-react';
+import { PanelRightClose, PanelRight, PanelLeftClose, PanelLeftOpen, FolderPlus, LogOut, Loader2, X, Download, ChevronDown, FolderOpen, Shield, Trash2 } from 'lucide-react';
 import type { CanvasItem, CanvasTool, ChatMessage, ImageAspectRatio } from './types';
 import AuthPanel from './components/AuthPanel';
 import AdminPage from './components/AdminPage';
@@ -27,6 +27,7 @@ import {
   CanvasPersistenceState,
   CanvasProject,
   createCanvasProject,
+  deleteCanvasProject,
   ensureCanvasImageAsset,
   getCanvasItemAssetId,
   listCanvasProjects,
@@ -523,6 +524,146 @@ const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
   );
 };
 
+const formatProjectDate = (value?: string) => {
+  if (!value) return '未同步';
+  return new Date(value).toLocaleDateString([], { month: '2-digit', day: '2-digit' });
+};
+
+const HomeLeftSidebar: React.FC<{
+  isAdmin: boolean;
+  projects: CanvasProject[];
+  currentProjectId: string;
+  currentProjectTitle: string;
+  hasLoadedCanvas: boolean;
+  canvasSyncStatus: 'loading' | 'saving' | 'saved' | 'error';
+  canvasSyncText: string;
+  isExpanded: boolean;
+  onProjectChange: (projectId: string) => void;
+  onProjectDelete: (projectId: string) => void;
+  onCreateProject: () => void;
+  onToggleExpanded: () => void;
+}> = ({
+  isAdmin,
+  projects,
+  currentProjectId,
+  currentProjectTitle,
+  hasLoadedCanvas,
+  canvasSyncStatus,
+  canvasSyncText,
+  isExpanded,
+  onProjectChange,
+  onProjectDelete,
+  onCreateProject,
+  onToggleExpanded
+}) => {
+  const syncTone = canvasSyncStatus === 'error'
+    ? 'bg-red-500'
+    : canvasSyncStatus === 'saving' || canvasSyncStatus === 'loading'
+      ? 'bg-amber-400'
+      : 'bg-emerald-500';
+
+  return (
+    <aside className={`absolute bottom-4 left-4 top-4 z-30 flex flex-col overflow-hidden border border-white/80 bg-white/90 shadow-[0_24px_80px_-40px_rgba(15,23,42,0.45)] backdrop-blur-2xl transition-all duration-300 ease-in-out ${isExpanded ? 'w-72 rounded-[28px]' : 'w-16 rounded-[24px]'}`}>
+      <div className={`border-b border-gray-100 transition-all duration-300 ease-in-out ${isExpanded ? 'p-4' : 'p-2.5'}`}>
+        <div className={`flex gap-3 ${isExpanded ? 'items-start justify-between' : 'flex-col items-center'}`}>
+          <div className={`min-w-0 transition-all duration-300 ease-in-out ${isExpanded ? 'opacity-100' : 'pointer-events-none h-0 opacity-0'}`}>
+            <p className="text-[10px] font-black uppercase tracking-[0.24em] text-gray-400">livart</p>
+            <h1 className="mt-1 truncate text-lg font-black tracking-tight text-gray-950">{currentProjectTitle || '默认画布'}</h1>
+          </div>
+          <div className={`flex shrink-0 items-center gap-2 ${isExpanded ? '' : 'flex-col'}`}>
+            <span className={`h-2.5 w-2.5 rounded-full ${syncTone}`} title={canvasSyncText} />
+            <button
+              type="button"
+              onClick={onToggleExpanded}
+              className="flex h-8 w-8 items-center justify-center rounded-xl text-gray-300 transition-all hover:bg-gray-100 hover:text-gray-700 active:scale-95"
+              title={isExpanded ? '收起左侧栏' : '展开左侧栏'}
+            >
+              {isExpanded ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
+            </button>
+          </div>
+        </div>
+
+        <div className={`grid gap-2 transition-all duration-300 ease-in-out ${isExpanded ? 'mt-4 grid-cols-2 opacity-100' : 'mt-3 grid-cols-1 opacity-100'}`}>
+          {isAdmin && isExpanded && (
+            <a
+              href="/admin"
+              className="flex h-10 items-center justify-center gap-2 rounded-2xl bg-gray-950 px-3 text-[10px] font-black uppercase tracking-widest text-white transition-all hover:bg-gray-800 active:scale-95"
+              title="进入管理后台"
+            >
+              <Shield size={14} /> Admin
+            </a>
+          )}
+          <button
+            type="button"
+            onClick={onCreateProject}
+            disabled={!hasLoadedCanvas}
+            className={`${isAdmin && isExpanded ? '' : 'col-span-2'} flex h-10 items-center justify-center gap-2 rounded-2xl bg-indigo-50 px-3 text-xs font-black text-indigo-600 transition-all hover:bg-indigo-100 active:scale-95 disabled:opacity-40`}
+            title="新建项目"
+          >
+            <FolderPlus size={15} /> {isExpanded && '新建项目'}
+          </button>
+        </div>
+      </div>
+
+      <div className={`flex min-h-0 flex-1 flex-col transition-all duration-300 ease-in-out ${isExpanded ? 'p-3' : 'p-2.5'}`}>
+        <div className={`mb-2 items-center justify-between px-1 ${isExpanded ? 'flex opacity-100' : 'hidden opacity-0'}`}>
+          <span className="text-xs font-black text-gray-500">项目列表</span>
+          <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-black text-gray-400">{projects.length}</span>
+        </div>
+        <div className={`scrollbar-hide min-h-0 flex-1 overflow-y-auto ${isExpanded ? 'space-y-1.5 pr-0.5' : 'space-y-2'}`}>
+          {projects.length === 0 && (
+            <div className={`rounded-2xl border border-dashed border-gray-200 text-center text-xs font-bold text-gray-400 ${isExpanded ? 'p-4' : 'p-2'}`}>
+              {isExpanded ? '暂无项目' : '空'}
+            </div>
+          )}
+          {projects.map(project => {
+            const isActive = project.id === currentProjectId;
+            return (
+              <div key={project.id} className="group relative">
+                <button
+                  type="button"
+                  onClick={() => onProjectChange(project.id)}
+                  disabled={!hasLoadedCanvas || isActive}
+                  className={`flex w-full items-center text-left transition-all active:scale-[0.99] disabled:cursor-default ${
+                    isExpanded
+                      ? `gap-3 rounded-2xl px-3 py-3 pr-11 ${isActive ? 'bg-gray-950 text-white shadow-lg shadow-black/10' : 'bg-gray-50 text-gray-700 hover:bg-indigo-50 hover:text-indigo-700'}`
+                      : `h-11 justify-center rounded-2xl ${isActive ? 'bg-gray-950 text-white shadow-lg shadow-black/10' : 'bg-gray-50 text-gray-400 hover:bg-indigo-50 hover:text-indigo-600'}`
+                  }`}
+                  title={project.title || '未命名项目'}
+                >
+                  <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${isExpanded ? isActive ? 'bg-white/15 text-white' : 'bg-white text-gray-400 group-hover:text-indigo-500' : ''}`}>
+                    <FolderOpen size={16} />
+                  </span>
+                  {isExpanded && (
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-black">{project.title || '未命名项目'}</span>
+                      <span className={`mt-0.5 block text-[10px] font-bold ${isActive ? 'text-white/45' : 'text-gray-400'}`}>更新 {formatProjectDate(project.updatedAt || project.createdAt)}</span>
+                    </span>
+                  )}
+                </button>
+                {isExpanded && projects.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onProjectDelete(project.id);
+                    }}
+                    disabled={!hasLoadedCanvas}
+                    className={`absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-xl opacity-0 transition-all group-hover:opacity-100 disabled:opacity-30 ${isActive ? 'text-white/45 hover:bg-white/10 hover:text-white' : 'text-gray-300 hover:bg-red-50 hover:text-red-500'}`}
+                    title="删除项目"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </aside>
+  );
+};
+
 function App() {
   const isAdminRoute = window.location.pathname.startsWith('/admin');
   const [items, setItems] = useState<CanvasItem[]>([]);
@@ -531,6 +672,7 @@ function App() {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: window.innerWidth / 4, y: window.innerHeight / 4 });
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [showLeftSidebar, setShowLeftSidebar] = useState(true);
   const [showSidebar, setShowSidebar] = useState(true);
   const [canvasTool, setCanvasTool] = useState<CanvasTool>('select');
   const [canvasBackgroundColor, setCanvasBackgroundColor] = useState(DEFAULT_CANVAS_BACKGROUND_COLOR);
@@ -551,6 +693,7 @@ function App() {
   const [newProjectTitle, setNewProjectTitle] = useState('');
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [createProjectError, setCreateProjectError] = useState('');
+  const [deletingProjectId, setDeletingProjectId] = useState('');
   const [isExportingProjectImage, setIsExportingProjectImage] = useState(false);
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
   const [exportProjectImageError, setExportProjectImageError] = useState('');
@@ -1073,6 +1216,36 @@ function App() {
       setCanvasSyncStatus('error');
     } finally {
       setIsCreatingProject(false);
+      setHasLoadedCanvas(true);
+    }
+  };
+
+  const handleDeleteProject = async (projectId: string) => {
+    if (!projectId || deletingProjectId || projects.length <= 1) return;
+    const project = projects.find(candidate => candidate.id === projectId);
+    const title = project?.title || '未命名项目';
+    if (!window.confirm(`删除项目“${title}”？此操作不可恢复。`)) return;
+
+    flushQueuedCanvasSave();
+    setDeletingProjectId(projectId);
+    setCanvasSyncStatus('loading');
+    try {
+      await deleteCanvasProject(projectId);
+      const nextProjects = projects.filter(candidate => candidate.id !== projectId);
+      setProjects(nextProjects);
+      if (projectId === currentProjectId) {
+        const nextProject = nextProjects[0] || (await createCanvasProject('默认画布')).project;
+        if (nextProjects.length === 0) {
+          setProjects([nextProject]);
+        }
+        await loadProjectById(nextProject.id);
+      }
+      setCanvasSyncStatus('saved');
+    } catch (error) {
+      console.warn('[canvas-persistence] delete project failed', error);
+      setCanvasSyncStatus('error');
+    } finally {
+      setDeletingProjectId('');
       setHasLoadedCanvas(true);
     }
   };
@@ -1668,46 +1841,20 @@ function App() {
   return (
     <div className="flex h-screen bg-[#fcfcfc] overflow-hidden font-sans text-gray-900">
       <div className="flex-1 relative flex flex-col">
-        <div className="absolute left-4 top-4 z-30 flex items-center gap-2">
-          <div className="flex items-center gap-1.5 rounded-2xl border border-gray-100 bg-white/90 p-1 shadow-[0_18px_48px_-28px_rgba(0,0,0,0.35)] backdrop-blur-2xl">
-            {authSession.user.isAdmin && (
-              <a
-                href="/admin"
-                className="flex h-9 items-center justify-center rounded-xl bg-gray-950 px-3 text-[10px] font-black uppercase tracking-widest text-white transition-all hover:bg-gray-800 active:scale-95"
-                title="进入管理后台"
-              >
-                Admin
-              </a>
-            )}
-            <select
-              value={currentProjectId}
-              onChange={(event) => handleProjectChange(event.target.value)}
-              disabled={!hasLoadedCanvas || projects.length === 0}
-              className="h-9 max-w-48 rounded-xl bg-gray-50 px-3 text-xs font-black text-gray-700 outline-none transition-all hover:bg-gray-100 disabled:opacity-50"
-              title="切换项目画布"
-            >
-              {projects.map(project => (
-                <option key={project.id} value={project.id}>
-                  {project.title || '未命名项目'}
-                </option>
-              ))}
-            </select>
-            <button
-              onClick={openCreateProjectModal}
-              disabled={!hasLoadedCanvas}
-              className="flex h-9 w-9 items-center justify-center rounded-xl text-gray-400 transition-all hover:bg-indigo-50 hover:text-indigo-600 active:scale-95 disabled:opacity-40"
-              title="新建项目"
-            >
-              <FolderPlus size={17} />
-            </button>
-            <span
-              className={`h-2.5 w-2.5 rounded-full ${
-                canvasSyncStatus === 'error' ? 'bg-red-500' : canvasSyncStatus === 'saving' ? 'bg-amber-400' : 'bg-emerald-500'
-              }`}
-              title={canvasSyncText}
-            />
-          </div>
-        </div>
+        <HomeLeftSidebar
+          isAdmin={authSession.user.isAdmin}
+          projects={projects}
+          currentProjectId={currentProjectId}
+          currentProjectTitle={currentProjectTitle}
+          hasLoadedCanvas={hasLoadedCanvas}
+          canvasSyncStatus={canvasSyncStatus}
+          canvasSyncText={canvasSyncText}
+          isExpanded={showLeftSidebar}
+          onProjectChange={handleProjectChange}
+          onProjectDelete={handleDeleteProject}
+          onCreateProject={openCreateProjectModal}
+          onToggleExpanded={() => setShowLeftSidebar(prev => !prev)}
+        />
 
         <div className="absolute right-4 top-4 z-30 flex items-center gap-2">
           <div className="flex items-center gap-1.5 rounded-2xl border border-gray-100 bg-white/90 p-1 shadow-[0_18px_48px_-28px_rgba(0,0,0,0.35)] backdrop-blur-2xl">
@@ -1772,7 +1919,7 @@ function App() {
         )}
 
         {isApiConfigLoaded && !apiConfigReady && (
-          <div className="absolute left-4 top-16 z-[5000000] max-w-md rounded-2xl border border-amber-100 bg-white px-4 py-3 text-sm font-bold text-amber-600 shadow-2xl">
+          <div className={`absolute top-4 z-[5000000] max-w-md rounded-2xl border border-amber-100 bg-white px-4 py-3 text-sm font-bold text-amber-600 shadow-2xl ${showLeftSidebar ? 'left-80' : 'left-20'}`}>
             公益站点暂未配置生图中转站，请等待管理员在后台完成配置。
           </div>
         )}

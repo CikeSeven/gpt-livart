@@ -173,6 +173,17 @@ func (m *memoryStore) SaveCanvas(ctx context.Context, userID string, canvasID st
 	return canvas, nil
 }
 
+func (m *memoryStore) DeleteCanvas(ctx context.Context, userID string, canvasID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.canvases[canvasID]; !ok || m.canvasUsers[canvasID] != userID {
+		return errNotFound
+	}
+	delete(m.canvases, canvasID)
+	delete(m.canvasUsers, canvasID)
+	return nil
+}
+
 func (m *memoryStore) CreateAsset(ctx context.Context, asset AssetResponse) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

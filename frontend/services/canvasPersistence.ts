@@ -327,6 +327,20 @@ export const loadCanvasProject = async (canvasId: string): Promise<CanvasLoadRes
   };
 };
 
+export const deleteCanvasProject = async (canvasId: string) => {
+  const response = await fetch(`/api/canvases/${canvasId}`, {
+    method: 'DELETE',
+    headers: {
+      Accept: 'application/json',
+      ...authHeaders()
+    }
+  });
+  await unwrapApiResponse<{ deleted: boolean }>(response);
+  if (currentCanvasId === canvasId) {
+    currentCanvasId = '';
+  }
+};
+
 export const loadCurrentCanvas = async () => {
   const projects = await listCanvasProjects();
   const firstProject = projects[0];

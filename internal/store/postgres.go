@@ -282,6 +282,17 @@ func (s *PostgresStore) SaveCanvas(ctx context.Context, userID string, canvasID 
 	return canvas, tx.Commit(ctx)
 }
 
+func (s *PostgresStore) DeleteCanvas(ctx context.Context, userID string, canvasID string) error {
+	commandTag, err := s.pool.Exec(ctx, `DELETE FROM artisan_canvases WHERE id=$1 AND user_id=$2`, canvasID, userID)
+	if err != nil {
+		return err
+	}
+	if commandTag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
 func (s *PostgresStore) CreateAsset(ctx context.Context, asset api.AssetResponse) error {
 	_, err := s.pool.Exec(ctx, `INSERT INTO artisan_assets (id, canvas_id, user_id, object_key, url_path, original_filename, mime_type, size_bytes, width, height, created_at) VALUES ($1, NULLIF($2, '')::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11)`, asset.ID, asset.CanvasID, asset.UserID, asset.ObjectKey, asset.URLPath, asset.OriginalFilename, asset.MimeType, asset.SizeBytes, asset.Width, asset.Height, asset.CreatedAt)
 	return err

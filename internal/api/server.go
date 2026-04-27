@@ -46,6 +46,7 @@ type Store interface {
 	GetCanvas(ctx context.Context, userID string, canvasID string) (CanvasResponse, error)
 	GetCurrentCanvas(ctx context.Context, userID string) (CanvasResponse, error)
 	SaveCanvas(ctx context.Context, userID string, canvasID string, request SaveCanvasRequest) (CanvasResponse, error)
+	DeleteCanvas(ctx context.Context, userID string, canvasID string) error
 	CreateAsset(ctx context.Context, asset AssetResponse) error
 	GetAsset(ctx context.Context, assetID string) (AssetResponse, error)
 	SaveExport(ctx context.Context, export ExportFile) error
@@ -115,6 +116,7 @@ func (s *Server) routes() http.Handler {
 		r.Post("/api/canvases", s.createCanvas)
 		r.Get("/api/canvases/{id}", s.getCanvas)
 		r.Put("/api/canvases/{id}", s.saveCanvas)
+		r.Delete("/api/canvases/{id}", s.deleteCanvas)
 		r.Get("/api/canvas/current", s.getCurrentCanvas)
 		r.Put("/api/canvas/current", s.saveCurrentCanvas)
 		r.Post("/api/assets", s.uploadAsset)
@@ -459,6 +461,14 @@ func (s *Server) getCurrentCanvas(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) saveCanvas(w http.ResponseWriter, r *http.Request) {
 	s.saveCanvasByID(w, r, chi.URLParam(r, "id"))
+}
+
+func (s *Server) deleteCanvas(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.DeleteCanvas(r.Context(), currentUser(r).ID, chi.URLParam(r, "id")); err != nil {
+		writeFail(w, http.StatusNotFound, "画布不存在", "CANVAS_NOT_FOUND")
+		return
+	}
+	writeOK(w, map[string]bool{"deleted": true})
 }
 
 func (s *Server) saveCurrentCanvas(w http.ResponseWriter, r *http.Request) {

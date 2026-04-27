@@ -329,6 +329,22 @@ func TestCanvasProjectFlowPersistsStateAndRevision(t *testing.T) {
 	if len(listed.Data) != 1 || listed.Data[0].Revision != 1 || listed.Data[0].Title != "Renamed" {
 		t.Fatalf("unexpected canvas list: %#v", listed)
 	}
+
+	deleteReq := httptest.NewRecorder()
+	deleteHTTPReq := httptest.NewRequest(http.MethodDelete, "/api/canvases/"+created.Data.ID, nil)
+	deleteHTTPReq.Header.Set("Authorization", "Bearer "+token)
+	server.Handler.ServeHTTP(deleteReq, deleteHTTPReq)
+	if deleteReq.Code != http.StatusOK {
+		t.Fatalf("delete status = %d body=%s", deleteReq.Code, deleteReq.Body.String())
+	}
+
+	getDeleted := httptest.NewRecorder()
+	getDeletedReq := httptest.NewRequest(http.MethodGet, "/api/canvases/"+created.Data.ID, nil)
+	getDeletedReq.Header.Set("Authorization", "Bearer "+token)
+	server.Handler.ServeHTTP(getDeleted, getDeletedReq)
+	if getDeleted.Code != http.StatusNotFound {
+		t.Fatalf("expected deleted canvas not found, status=%d body=%s", getDeleted.Code, getDeleted.Body.String())
+	}
 }
 
 func TestAssetUploadAndExportZip(t *testing.T) {
